@@ -1,7 +1,7 @@
 //! Contains structs and traits closely related to D-Bus messages.
 
 use std::{fmt, ptr};
-use super::{ffi, Error, libc, init_dbus};
+use super::{ffi, Error, init_dbus};
 use crate::strings::{BusName, Path, Interface, Member, ErrorName};
 use std::ffi::CStr;
 
@@ -375,7 +375,7 @@ impl Message {
         }
     }
 
-    fn msg_internal_str<'a>(&'a self, c: *const libc::c_char) -> Option<&'a str> {
+    fn msg_internal_str<'a>(&'a self, c: *const std::os::raw::c_char) -> Option<&'a str> {
         if c.is_null() { return None };
         let cc = unsafe { CStr::from_ptr(c) };
         std::str::from_utf8(cc.to_bytes_with_nul()).ok()

@@ -1,40 +1,38 @@
 use crate::{channel::WatchFd, ffi};
-use libc;
 use crate::ffidisp::Connection;
 
 use std::mem;
 use std::sync::{Mutex, RwLock};
-#[cfg(unix)]
-use std::os::unix::io::{RawFd, AsRawFd};
 #[cfg(windows)]
 use std::os::windows::io::{RawSocket, AsRawSocket};
 #[cfg(unix)]
-use libc::{POLLIN, POLLOUT, POLLERR, POLLHUP};
-#[cfg(windows)]
-use winapi::um::winsock2::{POLLIN, POLLOUT, POLLERR, POLLHUP};
 use rustix::fd::{BorrowedFd, AsFd};
+#[cfg(unix)]
+use rustix::fd::{AsRawFd, RawFd};
+use rustix::io::{PollFd, PollFlags};
 use std::os::raw::{c_void, c_uint};
 
 /// A file descriptor to watch for incoming events (for async I/O).
 ///
 /// # Example
 /// ```
-/// extern crate libc;
+/// extern crate rustix;
 /// extern crate dbus;
+/// use rustix::fd::{AsFd, AsRawFd};
 /// fn main() {
 ///     use dbus::ffidisp::{Connection, BusType, WatchEvent};
 ///     let c = Connection::get_private(BusType::Session).unwrap();
 ///
 ///     // Get a list of fds to poll for
-///     let mut fds: Vec<_> = c.watch_fds().iter().map(|w| w.to_pollfd()).collect();
+///     let fds: Vec<_> = c.watch_fds();
+///     let mut fds: Vec<_> = fds.iter().map(|w| w.to_pollfd()).collect();
 ///
 ///     // Poll them with a 1 s timeout
-///     let r = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::c_ulong, 1000) };
-///     assert!(r >= 0);
+///     let r = rustix::io::poll(&mut fds, 1000).unwrap();
 ///
 ///     // And handle incoming events
-///     for pfd in fds.iter().filter(|pfd| pfd.revents != 0) {
-///         for item in c.watch_handle(pfd.fd, WatchEvent::from_revents(pfd.revents)) {
+///     for pfd in fds.iter().filter(|pfd| !pfd.revents().is_empty()) {
+///         for item in c.watch_handle(pfd.as_fd().as_raw_fd(), WatchEvent::from_revents(pfd.revents())) {
 ///             // Handle item
 ///             println!("Received ConnectionItem: {:?}", item);
 ///         }
@@ -60,12 +58,12 @@ pub enum WatchEvent {
 
 impl WatchEvent {
     /// After running poll, this transforms the revents into a parameter you can send into `Connection::watch_handle`
-    pub fn from_revents(revents: libc::c_short) -> c_uint {
+    pub fn from_revents(revents: PollFlags) -> c_uint {
         0 +
-        if (revents & POLLIN) != 0 { WatchEvent::Readable as c_uint } else { 0 } +
-        if (revents & POLLOUT) != 0 { WatchEvent::Writable as c_uint } else { 0 } +
-        if (revents & POLLERR) != 0 { WatchEvent::Error as c_uint } else { 0 } +
-        if (revents & POLLHUP) != 0 { WatchEvent::Hangup as c_uint } else { 0 }
+        if revents.contains(PollFlags::IN) { WatchEvent::Readable as c_uint } else { 0 } +
+        if revents.contains(PollFlags::OUT)  { WatchEvent::Writable as c_uint } else { 0 } +
+        if revents.contains(PollFlags::ERR)  { WatchEvent::Error as c_uint } else { 0 } +
+        if revents.contains(PollFlags::HUP)  { WatchEvent::Hangup as c_uint } else { 0 }
     }
 }
 
@@ -80,27 +78,16 @@ pub struct Watch {
 impl Watch {
     /// Get the RawFd this Watch is for
     pub fn fd(&self) -> WatchFd { self.fd }
-    /// Add POLLIN to events to listen for
+    /// Add PollFlags::IN to events to listen for
     pub fn readable(&self) -> bool { self.read }
-    /// Add POLLOUT to events to listen for
+    /// Add PollFlags::OUT to events to listen for
     pub fn writable(&self) -> bool { self.write }
-    /// Returns the current watch as a libc::pollfd, to use with libc::poll
-    #[cfg(unix)]
-    pub fn to_pollfd(&self) -> libc::pollfd {
-        libc::pollfd { fd: self.fd, revents: 0, events: POLLERR + POLLHUP +
-            if self.readable() { POLLIN } else { 0 } +
-            if self.writable() { POLLOUT } else { 0 },
-        }
-    }
-    /// Returns the current watch as a winapi::um::winsock2::WSAPOLLFD, to use with winapi::um::winsock2::WSAPoll
-    #[cfg(windows)]
-    pub fn to_pollfd(&self) -> winapi::um::winsock2::WSAPOLLFD {
-        winapi::um::winsock2::WSAPOLLFD {
-            fd: self.fd as winapi::um::winsock2::SOCKET,
-            revents: 0, events: 0 +
-            if self.readable() { POLLIN } else { 0 } +
-            if self.writable() { POLLOUT } else { 0 },
-        }
+    /// Returns the current watch as a `PollFd`, to use with `poll`
+    pub fn to_pollfd(&self) -> PollFd {
+        PollFd::new(self, PollFlags::ERR | PollFlags::HUP |
+            if self.readable() { PollFlags::IN } else { PollFlags::empty() } |
+            if self.writable() { PollFlags::OUT } else { PollFlags::empty() },
+        )
     }
 }
 
@@ -225,10 +212,9 @@ extern "C" fn toggled_watch_cb(watch: *mut ffi::DBusWatch, data: *mut c_void) {
 
 #[cfg(test)]
 mod test {
-    #[cfg(unix)]
-    use libc;
     use super::super::{Connection, Message, BusType, WatchEvent, ConnectionItem, MessageType};
-    use super::{POLLIN, POLLOUT};
+    use super::PollFlags;
+    use super::{AsRawFd, AsFd};
 
     #[test]
     fn test_async() {
@@ -238,7 +224,8 @@ mod test {
         let serial = c.send(m).unwrap();
         println!("Async: sent serial {}", serial);
 
-        let mut fds: Vec<_> = c.watch_fds().iter().map(|w| w.to_pollfd()).collect();
+        let fds: Vec<_> = c.watch_fds();
+        let mut fds: Vec<_> = fds.iter().map(|w| w.to_pollfd()).collect();
         let mut new_fds = None;
         let mut i = 0;
         let mut success = false;
@@ -246,23 +233,16 @@ mod test {
             i += 1;
             if let Some(q) = new_fds { fds = q; new_fds = None };
 
-            for f in fds.iter_mut() { f.revents = 0 };
+            for f in fds.iter_mut() { f.clear_revents() };
 
-            #[cfg(unix)]
-            assert!(unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 1000) } > 0);
+            assert!(rustix::io::poll(&mut fds, 1000).is_ok());
 
-            #[cfg(windows)]
-            assert!(unsafe { winapi::um::winsock2::WSAPoll(fds.as_mut_ptr(), fds.len() as u32, 1000) } > 0);
+            for f in fds.iter().filter(|pfd| !pfd.revents().is_empty()) {
+                let m = WatchEvent::from_revents(f.revents());
+                println!("Async: fd {:?}, revents {:?} -> {}", f, f.revents(), m);
+                assert!(f.revents().contains(PollFlags::IN) || f.revents().contains(PollFlags::OUT));
 
-            for f in fds.iter().filter(|pfd| pfd.revents != 0) {
-                let m = WatchEvent::from_revents(f.revents);
-                println!("Async: fd {}, revents {} -> {}", f.fd, f.revents, m);
-                assert!(f.revents & POLLIN != 0 || f.revents & POLLOUT != 0);
-
-                #[cfg(unix)]
-                let fd = f.fd;
-                #[cfg(windows)]
-                let fd = f.fd as std::os::windows::io::RawSocket;
+                let fd = f.as_fd().as_raw_fd();
 
                 for e in c.watch_handle(fd, m) {
                     println!("Async: got {:?}", e);

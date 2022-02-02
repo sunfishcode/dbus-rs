@@ -43,7 +43,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::os::unix::io::RawFd;
 
-use rustix::fd::{AsRawFd, BorrowedFd};
+use rustix::fd::BorrowedFd;
 use rustix::net::RecvFlags;
 
 use tokio::io::unix::{AsyncFd, AsyncFdReadyGuard};
@@ -169,7 +169,7 @@ impl<C: AsRef<Channel> + Process> IOResource<C> {
                 // in case libdbus did not read all available data. Maybe there is a better way to see if there
                 // is more incoming data than calling rustix::net::recv?
                 // https://github.com/diwic/dbus-rs/issues/254
-                let watch_fd = unsafe { BorrowedFd::borrow_raw(watch_reg.as_raw_fd()) };
+                let watch_fd = unsafe { BorrowedFd::borrow_raw(*watch_reg.get_ref()) };
                 let mut x = [0u8];
                 let r = rustix::net::recv(&watch_fd, &mut x, RecvFlags::DONTWAIT | RecvFlags::PEEK);
                 if r != Ok(1) {

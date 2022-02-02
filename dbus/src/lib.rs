@@ -17,8 +17,6 @@
 
 #![warn(missing_docs)]
 
-extern crate libc;
-
 #[allow(missing_docs)]
 extern crate libdbus_sys as ffi;
 

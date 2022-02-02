@@ -14,7 +14,6 @@ readme = "../README.md"
 edition = "2018"
 
 [dependencies]
-libc = "0.2.66"
 libdbus-sys = { path = "../libdbus-sys", version = "0.2.3" }
 rustix = { version = "0.37.0", features = [] }
 futures-util = { version = "0.3", optional = true, default-features = false }

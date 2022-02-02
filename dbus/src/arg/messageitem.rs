@@ -747,12 +747,11 @@ mod test {
             if n.msg_type() == MessageType::MethodCall {
                 #[cfg(unix)]
                 {
-                    use std::os::unix::io::AsRawFd;
                     let z: crate::arg::OwnedFd = n.read1().unwrap();
                     println!("Got {:?}", z);
-                    let mut q: libc::c_char = 100;
-                    assert_eq!(1, unsafe { libc::read(z.as_raw_fd(), &mut q as *mut _ as *mut libc::c_void, 1) });
-                    assert_eq!(q, 'z' as libc::c_char);
+                    let mut q = [100_u8];
+                    assert_eq!(Ok(1), rustix::io::read(&z.fd, &mut q));
+                    assert_eq!(q, [b'z']);
                 }
                 return;
             } else {
