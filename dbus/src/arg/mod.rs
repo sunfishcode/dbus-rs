@@ -40,10 +40,22 @@ pub use std::os::unix::io::OwnedFd;
 /// An RAII wrapper around Fd to ensure that file descriptor is closed
 /// when the scope ends. Enable the `stdfd` feature to use std's OwnedFd instead.
 #[cfg(not(feature = "stdfd"))]
-#[derive(Debug, PartialEq, PartialOrd)]
+#[derive(Debug)]
 pub struct OwnedFd {
     #[cfg(unix)]
-    fd: std::os::unix::io::RawFd
+    fd: rustix::fd::OwnedFd,
+}
+
+impl PartialEq for OwnedFd {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_raw_fd() == other.as_raw_fd()
+    }
+}
+
+impl PartialOrd for OwnedFd {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        self.as_raw_fd().partial_cmp(&other.as_raw_fd())
+    }
 }
 
 #[cfg(all(unix,not(feature = "stdfd")))]
@@ -57,39 +69,29 @@ mod owned_fd_impl {
         /// This function is unsafe, because you could potentially send in an invalid file descriptor,
         /// or close it during the lifetime of this struct. This could potentially be unsound.
         pub unsafe fn new(fd: RawFd) -> OwnedFd {
-            OwnedFd { fd: fd }
+            OwnedFd { fd: rustix::fd::OwnedFd::from_raw_fd(fd) }
         }
 
         /// Convert an OwnedFD back into a RawFd.
         pub fn into_fd(self) -> RawFd {
-            let s = self.fd;
-            ::std::mem::forget(self);
-            s
+            self.fd.into_raw_fd()
         }
 
         /// Tries to clone the fd.
         pub fn try_clone(&self) -> Result<Self, &'static str> {
-            let x = unsafe { libc::dup(self.fd) };
-            if x == -1 { Err("Duplicating file descriptor failed") }
-            else { Ok(unsafe { OwnedFd::new(x) }) }
-        }
-    }
-
-    impl Drop for OwnedFd {
-        fn drop(&mut self) {
-            unsafe { libc::close(self.fd); }
+            Ok(Self { fd: self.fd.try_clone().map_err(|_| "Duplicating file descriptor failed")? })
         }
     }
 
     impl AsRawFd for OwnedFd {
         fn as_raw_fd(&self) -> RawFd {
-            self.fd
+            self.fd.as_raw_fd()
         }
     }
 
     impl IntoRawFd for OwnedFd {
         fn into_raw_fd(self) -> RawFd {
-            self.into_fd()
+            self.into_fd().into_raw_fd()
         }
     }
 

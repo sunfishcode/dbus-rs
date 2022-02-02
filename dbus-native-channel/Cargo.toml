@@ -8,3 +8,4 @@ edition = "2018"
 
 [dependencies]
 libc = "0.2.80"
+rustix = { version = "0.37.0", features = ["net", "process"] }
